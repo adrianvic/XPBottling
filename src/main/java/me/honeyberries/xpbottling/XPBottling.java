@@ -3,16 +3,26 @@ package me.honeyberries.xpbottling;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Material;
+import org.bukkit.NamespacedKey;
 import org.bukkit.Sound;
 import org.bukkit.block.Block;
 import org.bukkit.entity.Player;
+import org.bukkit.entity.ThrownExpBottle;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.Action;
+import org.bukkit.event.entity.ExpBottleEvent;
+import org.bukkit.event.entity.ItemMergeEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.meta.ItemMeta;
+import org.bukkit.persistence.PersistentDataContainer;
+import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.inventory.EquipmentSlot;
+
+import java.util.List;
+import java.util.Objects;
 
 /**
  * A lightweight Bukkit plugin that lets players bottle their experience.
@@ -32,18 +42,11 @@ import org.bukkit.inventory.EquipmentSlot;
  */
 public final class XPBottling extends JavaPlugin implements Listener {
 
-    /** Permission required to use the bottling interaction. */
     private static final String PERMISSION_USE = "xpbottling.use";
-    /** Flat experience point cost taken from the player for one bottle. */
-    private static final int EXPERIENCE_COST = 7;
-    /** Message shown when the player lacks the required permission. */
-    private static final Component NO_PERMISSION_MESSAGE = Component.text("You don't have permission to use XP Bottling!").color(NamedTextColor.RED);
-    /** Message shown when the player lacks sufficient experience to bottle. */
-    private static final Component NOT_ENOUGH_XP_MESSAGE = Component.text("You don't have enough XP to store it in a bottle!").color(NamedTextColor.RED);
-    /** Success sound volume. */
     private static final float SOUND_VOLUME = 1.0f;
-    /** Success sound pitch. */
     private static final float SOUND_PITCH = 1.25f;
+
+    private final NamespacedKey namespacedKey = new NamespacedKey(this, "xp");
 
     /**
      * Plugin boot hook.
@@ -89,27 +92,59 @@ public final class XPBottling extends JavaPlugin implements Listener {
         }
 
         Player player = event.getPlayer();
-        if (player.getInventory().getItemInMainHand().getType() != Material.GLASS_BOTTLE) {
+        if (player.getInventory().getItemInMainHand().getType() != Material.GLASS_BOTTLE && player.getInventory().getItemInMainHand().getType() != Material.EXPERIENCE_BOTTLE) {
             return;
         }
 
-        // At this point, we know the player is right-clicking an enchanting table with a glass bottle.
-        // We should handle this, so we cancel the event to prevent the GUI from opening.
         event.setCancelled(true);
 
         if (!player.hasPermission(PERMISSION_USE)) {
-            player.sendMessage(NO_PERMISSION_MESSAGE);
             return;
         }
 
-        // Check if the player has enough experience.
-        // The user requested to keep this logic as is.
-        if (player.getTotalExperience() < EXPERIENCE_COST && player.getLevel() < 1) {
-            player.sendMessage(NOT_ENOUGH_XP_MESSAGE);
+        int playerXP = player.getTotalExperience();
+        if (playerXP <= 0) {
             return;
         }
 
-        processBottling(player);
+        int xpToTake = playerXP;
+        if (player.isSneaking()) {
+            xpToTake = Math.min(100, playerXP);
+        }
+
+        ItemStack item = player.getInventory().getItemInMainHand();
+        ItemMeta meta = item.getItemMeta();
+        Integer xp = 0;
+        if (meta != null) {
+            Integer storedXP = meta.getPersistentDataContainer().get(namespacedKey, PersistentDataType.INTEGER);
+            if (storedXP != null) {
+                xp = storedXP;
+            }
+        }
+
+        if (item.getAmount() > 1) {
+            item.setAmount(item.getAmount() - 1);
+        } else {
+            player.getInventory().setItemInMainHand(new ItemStack(Material.AIR));
+        }
+
+        processBottling(xpToTake, xp, player);
+    }
+
+    @EventHandler
+    public void onExpBottle(ExpBottleEvent e) {
+        ThrownExpBottle bottle = e.getEntity();
+
+        ItemStack item = bottle.getItem();
+        ItemMeta meta = item.getItemMeta();
+
+        if (meta == null) return;
+
+        Integer xp = meta.getPersistentDataContainer().get(namespacedKey, PersistentDataType.INTEGER);
+
+        if (xp != null) {
+            e.setExperience(xp);
+        }
     }
 
     /**
@@ -123,14 +158,23 @@ public final class XPBottling extends JavaPlugin implements Listener {
      *
      * @param player the player receiving the bottled experience
      */
-    private void processBottling(Player player) {
-        // Remove the experience cost from the player.
-        player.giveExp(-EXPERIENCE_COST);
+    private void processBottling(int xpToTake, Integer initialXP, Player player) {
+        ItemStack bottle = new ItemStack(Material.EXPERIENCE_BOTTLE, 1);
+        ItemMeta meta = bottle.getItemMeta();
 
-        // Give the player an experience bottle.
-        player.getInventory().addItem(new ItemStack(Material.EXPERIENCE_BOTTLE, 1));
+        int totalXP = xpToTake + initialXP;
 
-        // Play a sound to indicate success.
+        meta.lore(List.of(
+                Component.text("%s XP".formatted(totalXP))
+        ));
+
+        PersistentDataContainer pdc = meta.getPersistentDataContainer();
+        pdc.set(namespacedKey, PersistentDataType.INTEGER, totalXP);
+        bottle.setItemMeta(meta);
+
+        player.giveExp(-xpToTake);
+
+        player.getInventory().addItem(bottle);
         player.getWorld().playSound(player.getLocation(), Sound.ITEM_BOTTLE_FILL_DRAGONBREATH, SOUND_VOLUME, SOUND_PITCH);
     }
 }
